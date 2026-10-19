@@ -1,27 +1,25 @@
 import os
 import json
 import asyncio
+from aiohttp import web
 from telethon import TelegramClient, events, Button
+from telethon.sessions import StringSession
 from telethon.tl.functions.bots import SetBotCommandsRequest
 from telethon.tl.types import BotCommand, BotCommandScopeDefault
 from telethon.errors import FloodWaitError, MessageNotModifiedError
 
-# 1. Your Telegram API credentials
-API_ID = 35911624
-API_HASH = '84333e05287cb06b1da68f6571cadaab'
-
-# 2. Your @MyStudying_last_bot Token
-BOT_TOKEN = '8820981008:AAFDATbel0KyTpLT3tKiyq4mK3B7603O4AQ'
+# Safely loaded from encrypted GitHub Secrets!
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+SESSION_STRING = os.environ["SESSION_STRING"]
 
 CONFIG_FILE = 'groups_config.json'
 STATE_FILE = 'bot_chat_synced.json'
 HISTORY_SCAN_LIMIT = 2000
 
-user_client = TelegramClient('hashtag_watcher_session', API_ID, API_HASH)
-bot_client = TelegramClient('control_bot_session', API_ID, API_HASH)
-
-# Track who is currently typing hashtags: {user_id: {"id": chat_key, "title": title}}
-pending_hashtag_input = {}
+user_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+bot_client = TelegramClient(StringSession(), API_ID, API_HASH)
 
 # Queue and Lock to safely bridge media from user_client to bot_client in private chat
 bot_media_queue = asyncio.Queue()
