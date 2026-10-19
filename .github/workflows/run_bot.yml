@@ -1,0 +1,36 @@
+name: Run Study Bot 24/7
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Load repository files
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Telethon
+        run: pip install -r requirements.txt
+
+      - name: Run Bot for 5 hours and 20 minutes
+        run: timeout 19200 python -u bot.py || true
+
+      - name: Save updated JSON state back to GitHub
+        run: |
+          git config user.name "StudyBotAutoSave"
+          git config user.email "bot@users.noreply.github.com"
+          git add *.json *.session || true
+          git diff --staged --quiet || git commit -m "Auto-save synced messages and config"
+          git push || true
