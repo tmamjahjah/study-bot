@@ -3,12 +3,12 @@ name: Run Study Bot 24/7
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */5 * * *'
+    - cron: '0 */4 * * *'  # Fallback: divides 24 hours evenly (every 4 hours)
 
 permissions:
   contents: write
+  actions: write  # Allows the bot to immediately trigger its next run
 
-# Prevents two instances from ever running at the same time and corrupting your SESSION_STRING
 concurrency:
   group: study-bot-instance
   cancel-in-progress: false
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 310
+    timeout-minutes: 250
     steps:
       - name: Load repository files
         uses: actions/checkout@v4
@@ -29,13 +29,13 @@ jobs:
       - name: Install Telethon
         run: pip install -r requirements.txt
 
-      - name: Run Bot for 4 hours and 50 minutes
+      - name: Run Bot for 3 hours and 53 minutes
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           SESSION_STRING: ${{ secrets.SESSION_STRING }}
-        run: timeout 17400 python -u bot.py || true
+        run: timeout 14000 python -u bot.py || true
 
       - name: Save updated JSON state back to GitHub
         if: always()
@@ -44,3 +44,9 @@ jobs:
           git config user.email "bot@users.noreply.github.com"
           git add *.json || true
           git diff --staged --quiet || (git commit -m "Auto-save synced messages and config" && git pull --rebase && git push) || true
+
+      - name: Immediately start next 24/7 cycle
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run "Run Study Bot 24/7" || true
