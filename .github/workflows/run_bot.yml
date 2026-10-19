@@ -8,10 +8,15 @@ on:
 permissions:
   contents: write
 
+# Prevents two instances from ever running at the same time and corrupting your SESSION_STRING
+concurrency:
+  group: study-bot-instance
+  cancel-in-progress: false
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 310
     steps:
       - name: Load repository files
         uses: actions/checkout@v4
@@ -24,19 +29,18 @@ jobs:
       - name: Install Telethon
         run: pip install -r requirements.txt
 
-      - name: Run Bot for 5 hours and 20 minutes
+      - name: Run Bot for 4 hours and 50 minutes
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           SESSION_STRING: ${{ secrets.SESSION_STRING }}
-        run: timeout 19200 python -u bot.py || true
+        run: timeout 17400 python -u bot.py || true
 
       - name: Save updated JSON state back to GitHub
+        if: always()
         run: |
           git config user.name "StudyBotAutoSave"
           git config user.email "bot@users.noreply.github.com"
-          git pull --rebase || true
           git add *.json || true
-          git diff --staged --quiet || git commit -m "Auto-save synced messages and config"
-          git push || true
+          git diff --staged --quiet || (git commit -m "Auto-save synced messages and config" && git pull --rebase && git push) || true
