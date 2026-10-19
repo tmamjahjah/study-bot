@@ -533,7 +533,21 @@ async def main():
         else:
             await event.reply(text, buttons=btns)
 
+    # --- THIS IS WHERE THE SNIPPET GOES (Right at the end of main) ---
     print(f"🚀 Shared Group Bot is LIVE! Add @{bot_username} to your group and send /start")
+
+    # Automatically catch up on any messages or edits missed during the GitHub Actions restart gap
+    async def startup_catchup_scan():
+        await asyncio.sleep(2)  # Give handlers a moment to initialize
+        cfg = load_json(CONFIG_FILE)
+        if get_monitored_groups(cfg):
+            target_chat_id = get_target_chat_id(cfg, owner_id)
+            print("🔄 Running automatic startup catch-up scan...")
+            added = await scan_all_groups_history(cfg, target_chat_id, owner_id, state, bot_username)
+            print(f"✅ Startup catch-up complete! Synced/updated {added} message(s).")
+
+    asyncio.create_task(startup_catchup_scan())
+
     await asyncio.gather(
         user_client.run_until_disconnected(),
         bot_client.run_until_disconnected()
