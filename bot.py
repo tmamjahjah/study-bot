@@ -1,7 +1,6 @@
 import os
 import json
 import asyncio
-from aiohttp import web
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from telethon.tl.functions.bots import SetBotCommandsRequest
@@ -20,6 +19,9 @@ HISTORY_SCAN_LIMIT = 2000
 
 user_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 bot_client = TelegramClient(StringSession(), API_ID, API_HASH)
+
+# Track who is currently typing hashtags: {user_id: {"id": chat_key, "title": title}}
+pending_hashtag_input = {}
 
 # Queue and Lock to safely bridge media from user_client to bot_client in private chat
 bot_media_queue = asyncio.Queue()
