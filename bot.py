@@ -7,7 +7,7 @@ from telethon.tl.functions.bots import SetBotCommandsRequest
 from telethon.tl.types import BotCommand, BotCommandScopeDefault
 from telethon.errors import FloodWaitError, MessageNotModifiedError
 
-# Safely loaded from encrypted GitHub Secrets (with your new token as fallback)
+# Safely loaded from encrypted GitHub Secrets (with your token as fallback)
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8820981008:AAEa0i2XcWbg8wY2SRMPMj3jgCw-F-Dbhps").strip()
@@ -46,6 +46,7 @@ CATEGORY_LABELS = {
 DEFAULT_SUBJECTS_TREE = {
     "السنة الخامسة": {
         "كيمياء صيدلية 2": {
+            "group_id": None,
             "lectures": ["#تفريغات_صيدلية_٢", "#تفريغات_كيمياء_صيدلية_2"],
             "boards": ["#لوح_صيدلية_٢", "#لوح_كيمياء_صيدلية_2"],
             "records": ["#تسجيلات_صيدلية_٢", "#تسجيل_صيدلية_٢"]
@@ -121,6 +122,28 @@ def get_subjects_tree(cfg):
     return cfg["_subjects"]
 
 
+def get_effective_group_tags(cfg, chat_key):
+    """
+    Returns the exact hashtags that belong to THIS specific group:
+    1. Manually added hashtags on the group itself.
+    2. Hashtags of subjects explicitly linked to THIS group (group_id == chat_key).
+    """
+    monitored = get_monitored_groups(cfg)
+    group_cfg = monitored.get(chat_key, {})
+    tags = set(group_cfg.get("hashtags", []))
+
+    tree = cfg.get("_subjects", {})
+    for yr_subjects in tree.values():
+        if not isinstance(yr_subjects, dict):
+            continue
+        for sub_data in yr_subjects.values():
+            if isinstance(sub_data, dict) and str(sub_data.get("group_id")) == str(chat_key):
+                for cat in ("lectures", "boards", "records"):
+                    for t in sub_data.get(cat, []):
+                        tags.add(t)
+    return list(tags)
+
+
 def get_target_chat_id(cfg, fallback_id):
     """Gets the shared group ID where lectures should be posted (falls back to owner DM if not set yet)."""
     return cfg.get("_target_chat_id", fallback_id)
@@ -162,7 +185,7 @@ def find_matching_tags(text, target_tags):
     return [tag for tag in target_tags if tag in text]
 
 
-async def sync_single_message(msg, chat, chat_key, group_cfg, target_chat_id, owner_id, state, bot_username):
+async def sync_single_message(msg, chat, chat_key, group_cfg, target_chat_id, owner_id, state, bot_username, allowed_tags=None):
     """Sends or updates the matched message inside the shared target group (or DM)."""
     global is_forwarding_media
 
@@ -177,7 +200,8 @@ async def sync_single_message(msg, chat, chat_key, group_cfg, target_chat_id, ow
         return False
 
     text = msg.raw_text or ""
-    matched_tags = find_matching_tags(text, group_cfg["hashtags"])
+    tags_to_check = allowed_tags if allowed_tags is not None else group_cfg.get("hashtags", [])
+    matched_tags = find_matching_tags(text, tags_to_check)
     if not matched_tags:
         return False
 
@@ -294,12 +318,18 @@ async def sync_single_message(msg, chat, chat_key, group_cfg, target_chat_id, ow
             return False
 
 
-async def scan_all_groups_history(config, target_chat_id, owner_id, state, bot_username):
+async def scan_all_groups_history(config, target_chat_id, owner_id, state, bot_username, only_chat_key=None):
     total_added = 0
     monitored = get_monitored_groups(config)
 
     for chat_key, group_cfg in monitored.items():
-        tags = list(group_cfg.get("hashtags", []))
+        if only_chat_key and str(chat_key) != str(only_chat_key):
+            continue
+
+        tags = get_effective_group_tags(config, chat_key)
+        if not tags:
+            continue
+
         try:
             chat_id_int = int(chat_key) if chat_key.lstrip('-').isdigit() else chat_key
             chat = await user_client.get_entity(chat_id_int)
@@ -314,7 +344,7 @@ async def scan_all_groups_history(config, target_chat_id, owner_id, state, bot_u
 
         matching_msgs.reverse()  # Oldest to newest
         for msg in matching_msgs:
-            if await sync_single_message(msg, chat, chat_key, group_cfg, target_chat_id, owner_id, state, bot_username):
+            if await sync_single_message(msg, chat, chat_key, group_cfg, target_chat_id, owner_id, state, bot_username, allowed_tags=tags):
                 total_added += 1
 
     return total_added
@@ -397,7 +427,7 @@ async def main():
 
     await setup_slash_menu()
 
-    # 1. Watch all configured groups in real time (Automatic!)
+    # 1. Watch all configured groups in real time (only matching tags for THAT specific group!)
     @user_client.on(events.NewMessage)
     @user_client.on(events.MessageEdited)
     async def live_handler(event):
@@ -405,6 +435,9 @@ async def main():
         monitored = get_monitored_groups(current_cfg)
         chat_key = str(event.chat_id)
         if chat_key not in monitored:
+            return
+        allowed_tags = get_effective_group_tags(current_cfg, chat_key)
+        if not allowed_tags:
             return
         target_chat_id = get_target_chat_id(current_cfg, owner_id)
         chat = await event.get_chat()
@@ -416,7 +449,8 @@ async def main():
             target_chat_id,
             owner_id,
             state,
-            bot_username
+            bot_username,
+            allowed_tags=allowed_tags
         )
 
     # 2. Handle commands, media bridging, and text input from ANY member in the group
@@ -457,15 +491,15 @@ async def main():
                 wait_msg = await event.reply(
                     f"✅ **تم الحفظ بنجاح!**\n"
                     f"👥 المجموعة: **{title}**\n"
-                    f"🏷️ الهاشتاغات: {', '.join(tags)}\n\n"
-                    f"⏳ جاري نسخ المحاضرات والرسائل السابقة إلى هذه المحادثة..."
+                    f"🏷️ الهاشتاغات الخاصة بها: {', '.join(tags)}\n\n"
+                    f"⏳ جاري نسخ المحاضرات والرسائل السابقة من هذه المجموعة فقط..."
                 )
-                added = await scan_all_groups_history(cfg, target_chat_id, owner_id, state, bot_username)
+                added = await scan_all_groups_history(cfg, target_chat_id, owner_id, state, bot_username, only_chat_key=chat_key)
                 await wait_msg.edit(
                     f"🎉 **اكتمل الإعداد والنسخ!**\n"
                     f"👥 المجموعة: **{title}**\n"
                     f"🏷️ الهاشتاغات: {', '.join(tags)}\n"
-                    f"📥 الرسائل التي تم جلبها: `{added}`",
+                    f"📥 الرسائل التي تم جلبها من هذه المجموعة: `{added}`",
                     buttons=main_menu_buttons()
                 )
                 return
@@ -480,16 +514,18 @@ async def main():
                 if year_name not in tree:
                     tree[year_name] = {}
                 if sub_name not in tree[year_name]:
-                    tree[year_name][sub_name] = {"lectures": [], "boards": [], "records": []}
+                    tree[year_name][sub_name] = {
+                        "group_id": None,
+                        "lectures": [],
+                        "boards": [],
+                        "records": []
+                    }
                 save_json(CONFIG_FILE, cfg)
 
                 sub_list = list(tree[year_name].keys())
                 sub_idx = sub_list.index(sub_name)
-                await event.reply(
-                    f"✅ **تمت إضافة المادة:** `{sub_name}` في **{year_name}**.\n\n"
-                    f"الآن اختر القسم الذي تريد تحديد هاشتاغاته لهذه المادة:",
-                    buttons=subject_categories_buttons(year_idx, sub_idx, edit_mode=True)
-                )
+                # Prompt user to pick the specific group for this subject right away!
+                await show_subject_group_picker(event, year_idx, sub_idx, page=0, is_callback=False)
                 return
 
             elif mode == "add_subject_tags":
@@ -512,8 +548,11 @@ async def main():
                 ]
                 tree[year_name][sub_name][cat_key] = tags
 
+                # ONLY add these tags to the specific group linked to this subject (NOT all groups!)
+                linked_group_id = tree[year_name][sub_name].get("group_id")
                 monitored = get_monitored_groups(cfg)
-                for g_id, g_info in monitored.items():
+                if linked_group_id and str(linked_group_id) in monitored:
+                    g_info = monitored[str(linked_group_id)]
                     existing = set(g_info.get("hashtags", []))
                     for t in tags:
                         existing.add(t)
@@ -525,7 +564,7 @@ async def main():
                     f"✅ **تم حفظ هاشتاغات {cat_label} لمادة {sub_name}:**\n"
                     f"`{', '.join(tags)}`\n\n"
                     f"يمكنك الآن إضافة هاشتاغات قسم آخر أو تصفح المادة مباشرة:",
-                    buttons=subject_categories_buttons(year_idx, sub_idx, edit_mode=False)
+                    buttons=subject_categories_buttons(year_idx, sub_idx, edit_mode=True)
                 )
                 return
 
@@ -660,9 +699,11 @@ async def main():
                     chat = await user_client.get_entity(chat_id_int)
                     orig_msg = await user_client.get_messages(chat, ids=msg_id)
                     if orig_msg:
+                        allowed_tags = get_effective_group_tags(cfg, chat_key)
                         restored_ok = await sync_single_message(
                             orig_msg, chat, chat_key, monitored[chat_key],
-                            target_chat_id, owner_id, state, bot_username
+                            target_chat_id, owner_id, state, bot_username,
+                            allowed_tags=allowed_tags
                         )
             except Exception as e:
                 print(f"⚠️ Error restoring {unique_key}: {e}")
@@ -702,7 +743,7 @@ async def main():
             pending_user_input[sender_id] = {"mode": "add_subject_name", "year_idx": year_idx}
             await event.edit(
                 f"✍️ **إضافة مادة جديدة في {year_name}:**\n\n"
-                f"أرسل الآن اسم المادة في المحادثة (مثال: `كيمياء صيدلية 2`):",
+                f"أرسل الآن اسم المادة في المحادثة (مثال: `السموم`):",
                 buttons=[[Button.inline("🔙 إلغاء والعودة", f"subj_yr_{year_idx}".encode('utf-8'))]]
             )
 
@@ -734,6 +775,61 @@ async def main():
             year_idx, sub_idx = int(y_str), int(s_str)
             await show_subject_categories(event, year_idx, sub_idx, edit_mode=True)
 
+        elif data.startswith("subj_grp_"):
+            # Format: subj_grp_{year_idx}_{sub_idx}_{page}
+            parts = data.split("_")
+            year_idx, sub_idx, page = int(parts[2]), int(parts[3]), int(parts[4])
+            await show_subject_group_picker(event, year_idx, sub_idx, page=page, is_callback=True)
+
+        elif data.startswith("subj_setgrp|"):
+            # Format: subj_setgrp|{year_idx}|{sub_idx}|{chat_key}
+            _, y_str, s_str, chat_key = data.split("|", 3)
+            year_idx, sub_idx = int(y_str), int(s_str)
+            year_name = ACADEMIC_YEARS[year_idx]
+
+            cfg = load_json(CONFIG_FILE)
+            tree = get_subjects_tree(cfg)
+            sub_list = list(tree.get(year_name, {}).keys())
+            if sub_idx >= len(sub_list):
+                await show_year_subjects_menu(event, year_idx)
+                return
+
+            sub_name = sub_list[sub_idx]
+            sub_data = tree[year_name][sub_name]
+
+            if chat_key == "ALL":
+                sub_data["group_id"] = None
+                save_json(CONFIG_FILE, cfg)
+                await event.answer("✅ تم ضبط المادة لتبحث في جميع المجموعات المراقبة.", alert=True)
+            else:
+                # Find group title from monitored or dialogs
+                title = cfg.get(chat_key, {}).get("title")
+                if not title:
+                    dialogs = await user_client.get_dialogs()
+                    title = chat_key
+                    for d in dialogs:
+                        if str(d.id) == chat_key:
+                            title = d.name
+                            break
+
+                sub_data["group_id"] = chat_key
+                sub_data["group_title"] = title
+
+                # Ensure this group is in monitored groups and has this subject's tags
+                if chat_key not in cfg or not isinstance(cfg[chat_key], dict):
+                    cfg[chat_key] = {"title": title, "hashtags": []}
+
+                existing_tags = set(cfg[chat_key].get("hashtags", []))
+                for cat in ("lectures", "boards", "records"):
+                    for t in sub_data.get(cat, []):
+                        existing_tags.add(t)
+                cfg[chat_key]["hashtags"] = list(existing_tags)
+
+                save_json(CONFIG_FILE, cfg)
+                await event.answer(f"✅ تم ربط مادة ({sub_name}) بمجموعة ({title}) فقط!", alert=True)
+
+            await show_subject_categories(event, year_idx, sub_idx, edit_mode=True)
+
         elif data.startswith("subj_setcat_"):
             _, _, y_str, s_str, cat_key = data.split("_")
             year_idx, sub_idx = int(y_str), int(s_str)
@@ -755,7 +851,7 @@ async def main():
                 f"🏷️ **تحديد هاشتاغات {cat_label}**\n"
                 f"📚 المادة: **{sub_name}** ({year_name}){note}\n\n"
                 f"✍️ أرسل الآن الهاشتاغات الخاصة بهذا القسم مفصولة بفاصلة، مثال:\n"
-                f"`#تفريغات_صيدلية_٢, #محاضرات_صيدلية_٢`",
+                f"`#تفريغات_سموم, #تفريغ_سموم`",
                 buttons=[[Button.inline("🔙 إلغاء والعودة", f"subj_pick_{year_idx}_{sub_idx}".encode('utf-8'))]]
             )
 
@@ -799,7 +895,7 @@ async def main():
 
             await event.edit(
                 f"👥 اخترت المجموعة: **{title}**{extra_note}\n\n"
-                f"✍️ **أرسل الآن في المحادثة الهاشتاغات المطلوبة لهذه المجموعة**\n"
+                f"✍️ **أرسل الآن في المحادثة الهاشتاغات المطلوبة لهذه المجموعة فقط**\n"
                 f"افصل بينها بفاصلة، مثال:\n"
                 f"`#تفريغات_صيدلية_٢, #لوح_صيدلية_٢`",
                 buttons=[[Button.inline("🔙 إلغاء والعودة", b"menu_home")]]
@@ -836,7 +932,7 @@ async def main():
             cfg = load_json(CONFIG_FILE)
             cfg["_target_chat_id"] = event.chat_id
             save_json(CONFIG_FILE, cfg)
-            await event.edit("♻️ تم تصفير الذاكرة (مع الحفاظ على الرسائل المستثناة)! جاري إعادة نسخ جميع المحاضرات...")
+            await event.edit("♻️ تم تصفير الذاكرة (مع الحفاظ على الرسائل المستثناة)! جاري إعادة نسخ المحاضرات حسب هاشتاغات كل مجموعة...")
             added = await scan_all_groups_history(cfg, event.chat_id, owner_id, state, bot_username)
             await bot_client.send_message(
                 event.chat_id,
@@ -915,10 +1011,16 @@ async def main():
         cfg = load_json(CONFIG_FILE)
         tree = get_subjects_tree(cfg)
         subjects_dict = tree.get(year_name, {})
+        monitored = get_monitored_groups(cfg)
 
         btns = []
-        for s_idx, sub_name in enumerate(subjects_dict.keys()):
-            btns.append([Button.inline(f"📖 {sub_name}", f"subj_pick_{year_idx}_{s_idx}".encode('utf-8'))])
+        for s_idx, (sub_name, sub_data) in enumerate(subjects_dict.items()):
+            grp_id = sub_data.get("group_id") if isinstance(sub_data, dict) else None
+            grp_title = ""
+            if grp_id:
+                grp_title = monitored.get(str(grp_id), {}).get("title") or sub_data.get("group_title", "")
+            label = f"📖 {sub_name} ({grp_title[:18]})" if grp_title else f"📖 {sub_name}"
+            btns.append([Button.inline(label, f"subj_pick_{year_idx}_{s_idx}".encode('utf-8'))])
 
         control_row = [Button.inline("➕ إضافة مادة لهذه السنة", f"subj_add_{year_idx}".encode('utf-8'))]
         if subjects_dict:
@@ -928,7 +1030,7 @@ async def main():
                      Button.inline("🏠 الرئيسية", b"menu_home")])
 
         if not subjects_dict:
-            text = f"🎓 **{year_name}**\n⚠️ لا توجد مواد مضافة في هذه السنة حتى الآن.\nاضغط على **➕ إضافة مادة لهذه السنة** لإضافة المواد وربطها بالهاشتاغات."
+            text = f"🎓 **{year_name}**\n⚠️ لا توجد مواد مضافة في هذه السنة حتى الآن.\nاضغط على **➕ إضافة مادة لهذه السنة** لإضافة المواد وربطها بمجموعاتها."
         else:
             text = f"🎓 **{year_name}**\nاختر المادة المطلوبة لعرض أقسامها (تفريغات، صور لوح، تسجيلات):"
 
@@ -947,6 +1049,58 @@ async def main():
 
         await event.edit(f"🗑️ **اختر المادة التي تريد حذفها من {year_name}:**", buttons=btns)
 
+    async def show_subject_group_picker(event, year_idx, sub_idx, page=0, is_callback=True):
+        year_name = ACADEMIC_YEARS[year_idx]
+        cfg = load_json(CONFIG_FILE)
+        tree = get_subjects_tree(cfg)
+        sub_list = list(tree.get(year_name, {}).keys())
+        if sub_idx >= len(sub_list):
+            return
+        sub_name = sub_list[sub_idx]
+        current_gid = str(tree[year_name][sub_name].get("group_id") or "")
+
+        dialogs = await user_client.get_dialogs()
+        groups = [d for d in dialogs if (d.is_group or d.is_channel) and d.id != event.chat_id]
+
+        # Put already-monitored groups at the top for convenience
+        monitored = get_monitored_groups(cfg)
+        groups.sort(key=lambda d: (0 if str(d.id) in monitored else 1, d.name or ""))
+
+        per_page = 7
+        start = page * per_page
+        end = start + per_page
+        current_slice = groups[start:end]
+
+        btns = []
+        for g in current_slice:
+            mark = "✅ " if str(g.id) == current_gid else "👥 "
+            btns.append([
+                Button.inline(
+                    f"{mark}{g.name[:34]}",
+                    f"subj_setgrp|{year_idx}|{sub_idx}|{g.id}".encode('utf-8')
+                )
+            ])
+
+        nav = []
+        if page > 0:
+            nav.append(Button.inline("⬅️ السابق", f"subj_grp_{year_idx}_{sub_idx}_{page - 1}".encode('utf-8')))
+        if end < len(groups):
+            nav.append(Button.inline("التالي ➡️", f"subj_grp_{year_idx}_{sub_idx}_{page + 1}".encode('utf-8')))
+        if nav:
+            btns.append(nav)
+
+        btns.append([Button.inline("🌐 البحث في جميع المجموعات المراقبة", f"subj_setgrp|{year_idx}|{sub_idx}|ALL".encode('utf-8'))])
+        btns.append([Button.inline("🔙 العودة للمادة", f"subj_edit_{year_idx}_{sub_idx}".encode('utf-8'))])
+
+        text = (
+            f"👥 **اختر المجموعة الخاصة بمادة: {sub_name}** ({year_name})\n\n"
+            f"سيقوم البوت بجلب هاشتاغات هذه المادة **حصرياً من المجموعة التي تختارها هنا** (وليس من كل المجموعات):"
+        )
+        if is_callback:
+            await event.edit(text, buttons=btns)
+        else:
+            await event.reply(text, buttons=btns)
+
     def subject_categories_buttons(year_idx, sub_idx, edit_mode=False):
         prefix = "subj_setcat" if edit_mode else "subj_get"
         btns = [
@@ -960,9 +1114,10 @@ async def main():
         ]
         if not edit_mode:
             btns[1].append(Button.inline("📦 عرض الكل", f"subj_get_{year_idx}_{sub_idx}_all".encode('utf-8')))
-            btns.append([Button.inline("⚙️ تعديل هاشتاغات هذه المادة", f"subj_edit_{year_idx}_{sub_idx}".encode('utf-8'))])
+            btns.append([Button.inline("⚙️ تعديل المجموعة والهاشتاغات لهذه المادة", f"subj_edit_{year_idx}_{sub_idx}".encode('utf-8'))])
         else:
-            btns.append([Button.inline("✅ انتهيت من تعديل الهاشتاغات", f"subj_pick_{year_idx}_{sub_idx}".encode('utf-8'))])
+            btns.append([Button.inline("👥 تحديد المجموعة المصدر للمادة", f"subj_grp_{year_idx}_{sub_idx}_0".encode('utf-8'))])
+            btns.append([Button.inline("✅ انتهيت من الإعداد", f"subj_pick_{year_idx}_{sub_idx}".encode('utf-8'))])
 
         btns.append([
             Button.inline("🔙 العودة للمواد", f"subj_yr_{year_idx}".encode('utf-8')),
@@ -982,25 +1137,34 @@ async def main():
         sub_name = sub_list[sub_idx]
         sub_data = tree[year_name][sub_name]
 
+        monitored = get_monitored_groups(cfg)
+        grp_id = sub_data.get("group_id")
+        if grp_id:
+            grp_label = monitored.get(str(grp_id), {}).get("title") or sub_data.get("group_title") or f"مجموعة ({grp_id})"
+        else:
+            grp_label = "⚠️ غير محددة (يبحث في كل المجموعات)"
+
         lec_tags = ", ".join(sub_data.get("lectures", [])) or "غير محدد"
         brd_tags = ", ".join(sub_data.get("boards", [])) or "غير محدد"
         rec_tags = ", ".join(sub_data.get("records", [])) or "غير محدد"
 
         if edit_mode:
             text = (
-                f"⚙️ **إعداد هاشتاغات مادة: {sub_name}** ({year_name})\n\n"
+                f"⚙️ **إعداد مادة: {sub_name}** ({year_name})\n\n"
+                f"• **👥 المجموعة المصدر:** `{grp_label}`\n"
                 f"• **📝 التفريغات:** `{lec_tags}`\n"
                 f"• **🖼️ صور اللوح:** `{brd_tags}`\n"
                 f"• **🎙️ التسجيلات:** `{rec_tags}`\n\n"
-                f"👇 اضغط على القسم الذي تريد تحديد أو تعديل هاشتاغاته:"
+                f"👇 اضغط على **👥 تحديد المجموعة المصدر** لاختيار غروب هذه المادة، أو اضغط على أي قسم لتعديل هاشتاغاته:"
             )
         else:
             text = (
-                f"📖 **مادة: {sub_name}** ({year_name})\n\n"
+                f"📖 **مادة: {sub_name}** ({year_name})\n"
+                f"👥 **المجموعة المصدر:** `{grp_label}`\n\n"
                 f"• **📝 التفريغات:** `{lec_tags}`\n"
                 f"• **🖼️ صور اللوح:** `{brd_tags}`\n"
                 f"• **🎙️ التسجيلات:** `{rec_tags}`\n\n"
-                f"👇 **اختر القسم المطلوب لجلب جميع رسائله ومحاضراته:**"
+                f"👇 **اختر القسم المطلوب لجلب رسائله ومحاضراته من مجموعة المادة:**"
             )
 
         await event.edit(text, buttons=subject_categories_buttons(year_idx, sub_idx, edit_mode=edit_mode))
@@ -1015,6 +1179,7 @@ async def main():
 
         sub_name = sub_list[sub_idx]
         sub_data = tree[year_name][sub_name]
+        subject_group_id = sub_data.get("group_id")
 
         if cat_key == "all":
             target_tags = (
@@ -1028,13 +1193,14 @@ async def main():
             cat_title = CATEGORY_LABELS.get(cat_key, cat_key)
 
         if not target_tags:
-            await event.answer("⚠️ لم يتم تحديد هاشتاغات لهذا القسم بعد! اضغط على (⚙️ تعديل هاشتاغات هذه المادة) لإضافتها.", alert=True)
+            await event.answer("⚠️ لم يتم تحديد هاشتاغات لهذا القسم بعد! اضغط على (⚙️ تعديل المجموعة والهاشتاغات) لإضافتها.", alert=True)
             return
 
         await event.edit(f"⏳ جاري البحث وجمع **{cat_title}** لمادة **{sub_name}**...")
 
         target_chat_id = get_target_chat_id(cfg, event.chat_id)
-        await scan_all_groups_history(cfg, target_chat_id, owner_id, state, bot_username)
+        # Scan only the subject's assigned group (or all if none assigned)
+        await scan_all_groups_history(cfg, target_chat_id, owner_id, state, bot_username, only_chat_key=subject_group_id)
 
         ignored_dict = ensure_ignored_dict(state)
         matched_items = []
@@ -1042,6 +1208,11 @@ async def main():
         for u_key, info in state.get("messages", {}).items():
             if u_key in ignored_dict:
                 continue
+            msg_chat_key = u_key.split(":", 1)[0]
+            # Filter strictly by the subject's group_id if one is set!
+            if subject_group_id and str(msg_chat_key) != str(subject_group_id):
+                continue
+
             msg_text = info.get("text", "")
             if find_matching_tags(msg_text, target_tags):
                 bot_msg_id = info.get("bot_msg_id")
@@ -1057,18 +1228,27 @@ async def main():
             [Button.inline("📚 اختيار مادة أخرى", b"subj_years"), Button.inline("🏠 الرئيسية", b"menu_home")]
         ]
 
+        monitored = get_monitored_groups(cfg)
+        grp_name = (
+            monitored.get(str(subject_group_id), {}).get("title")
+            or sub_data.get("group_title")
+            or "جميع المجموعات المراقبة"
+        ) if subject_group_id else "جميع المجموعات المراقبة"
+
         if not matched_items:
             await event.edit(
                 f"📭 **لم يتم العثور على رسائل مطابقة حالياً!**\n"
                 f"📖 المادة: **{sub_name}** ({cat_title})\n"
+                f"👥 المجموعة المحددة: **{grp_name}**\n"
                 f"🏷️ الهاشتاغات المبحوث عنها: `{', '.join(target_tags)}`\n\n"
-                f"💡 تأكد من أن المجموعة التي تنشر هذه المادة مضافة في **📋 المجموعات المراقبة**.",
+                f"💡 تأكد من تحديد المجموعة الصحيحة للمادة عبر زر **⚙️ تعديل المجموعة والهاشتاغات**.",
                 buttons=back_btns
             )
             return
 
         report_lines = [
             f"📚 **نتائج البحث لمادة: {sub_name}**",
+            f"👥 **المجموعة:** {grp_name}",
             f"📂 **القسم:** {cat_title} | **العدد:** `{len(matched_items)}`",
             f"🏷️ **الهاشتاغات:** `{', '.join(target_tags)}`",
             "────────────────────"
@@ -1090,9 +1270,11 @@ async def main():
         if not monitored:
             text = "⚠️ لا توجد مجموعات مراقبة حالياً.\nاضغط على **➕ إضافة / تعديل مجموعة** لاختيار مجموعاتك."
         else:
-            text = "📋 **المجموعات والهاشتاغات المراقبة حالياً:**\n\n"
+            text = "📋 **المجموعات والهاشتاغات المراقبة حالياً (لكل مجموعة على حدة):**\n\n"
             for cid, info in monitored.items():
-                text += f"• **{info['title']}**\n  🏷️ `{', '.join(info['hashtags'])}`\n\n"
+                effective_tags = get_effective_group_tags(cfg, cid)
+                tags_display = ", ".join(effective_tags) if effective_tags else "لا توجد هاشتاغات"
+                text += f"• **{info['title']}**\n  🏷️ `{tags_display}`\n\n"
         btns = [[Button.inline("➕ إضافة / تعديل", b"menu_add_0"),
                  Button.inline("🗑️ حذف مجموعة", b"menu_remove")],
                 [Button.inline("🔙 القائمة الرئيسية", b"menu_home")]]
@@ -1122,7 +1304,7 @@ async def main():
             btns.append(nav)
         btns.append([Button.inline("🔙 القائمة الرئيسية", b"menu_home")])
 
-        text = "➕ **اختر المجموعة التي تريد مراقبتها بالضغط على اسمها:**"
+        text = "➕ **اختر المجموعة التي تريد مراقبتها وتحديد هاشتاغات خاصة بها فقط:**"
         if is_callback:
             await event.edit(text, buttons=btns)
         else:
