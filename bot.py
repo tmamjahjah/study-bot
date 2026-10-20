@@ -7,10 +7,10 @@ from telethon.tl.functions.bots import SetBotCommandsRequest
 from telethon.tl.types import BotCommand, BotCommandScopeDefault
 from telethon.errors import FloodWaitError, MessageNotModifiedError
 
-# Safely loaded from encrypted GitHub Secrets!
+# Safely loaded from encrypted GitHub Secrets (with your new token as fallback)
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8820981008:AAEa0i2XcWbg8wY2SRMPMj3jgCw-F-Dbhps").strip()
 SESSION_STRING = os.environ["SESSION_STRING"]
 
 CONFIG_FILE = 'groups_config.json'
@@ -18,7 +18,8 @@ STATE_FILE = 'bot_chat_synced.json'
 HISTORY_SCAN_LIMIT = 2000
 
 user_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
-bot_client = TelegramClient(StringSession(), API_ID, API_HASH)
+# bot_client is initialized inside main() after loading its saved session string
+bot_client = None
 
 # Track user text input states
 pending_user_input = {}
@@ -351,8 +352,40 @@ async def setup_slash_menu():
 
 
 async def main():
+    global bot_client
     await user_client.start()
-    await bot_client.start(bot_token=BOT_TOKEN)
+
+    # Reuse saved bot session so we never hit ImportBotAuthorizationRequest FloodWait
+    cfg = load_json(CONFIG_FILE)
+    saved_bot_session = cfg.get("_bot_session", "")
+    bot_client = TelegramClient(StringSession(saved_bot_session), API_ID, API_HASH)
+
+    while True:
+        try:
+            if saved_bot_session:
+                try:
+                    await bot_client.start()
+                    if not await bot_client.is_user_authorized():
+                        raise ValueError("Saved bot session is no longer authorized.")
+                except Exception as e:
+                    print(f"⚠️ Saved bot session invalid or expired ({e}), signing in with BOT_TOKEN...")
+                    saved_bot_session = ""
+                    bot_client = TelegramClient(StringSession(), API_ID, API_HASH)
+                    await bot_client.start(bot_token=BOT_TOKEN)
+                    cfg = load_json(CONFIG_FILE)
+                    cfg["_bot_session"] = bot_client.session.save()
+                    save_json(CONFIG_FILE, cfg)
+                    print("💾 Saved new bot session string to groups_config.json!")
+            else:
+                await bot_client.start(bot_token=BOT_TOKEN)
+                cfg = load_json(CONFIG_FILE)
+                cfg["_bot_session"] = bot_client.session.save()
+                save_json(CONFIG_FILE, cfg)
+                print("💾 Saved new bot session string to groups_config.json!")
+            break
+        except FloodWaitError as e:
+            print(f"⏳ Telegram Bot login FloodWait active: waiting {e.seconds}s (~{e.seconds // 60}m)...")
+            await asyncio.sleep(e.seconds + 5)
 
     me = await user_client.get_me()
     owner_id = me.id
