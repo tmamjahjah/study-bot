@@ -122,26 +122,88 @@ def get_subjects_tree(cfg):
     return cfg["_subjects"]
 
 
-def get_effective_group_tags(cfg, chat_key):
+def sanitize_config_isolation(cfg):
     """
-    Returns the exact hashtags that belong to THIS specific group:
-    1. Manually added hashtags on the group itself.
-    2. Hashtags of subjects explicitly linked to THIS group (group_id == chat_key).
+    Cleans up any legacy polluted hashtags in groups_config.json:
+    If a subject is linked to a specific group_id, its hashtags are IMMEDIATELY
+    removed from all other groups' 'hashtags' lists so they never bleed across groups.
     """
-    monitored = get_monitored_groups(cfg)
-    group_cfg = monitored.get(chat_key, {})
-    tags = set(group_cfg.get("hashtags", []))
-
     tree = cfg.get("_subjects", {})
+    monitored = get_monitored_groups(cfg)
+    changed = False
+
+    # Map each subject hashtag to the set of group_ids it is explicitly assigned to
+    tag_to_assigned_groups = {}
     for yr_subjects in tree.values():
         if not isinstance(yr_subjects, dict):
             continue
         for sub_data in yr_subjects.values():
-            if isinstance(sub_data, dict) and str(sub_data.get("group_id")) == str(chat_key):
+            if not isinstance(sub_data, dict):
+                continue
+            gid = sub_data.get("group_id")
+            if gid:
+                gid_str = str(gid)
                 for cat in ("lectures", "boards", "records"):
                     for t in sub_data.get(cat, []):
-                        tags.add(t)
-    return list(tags)
+                        tag_to_assigned_groups.setdefault(t, set()).add(gid_str)
+
+    # Purge assigned subject tags from any group where they don't belong
+    for chat_key, g_info in monitored.items():
+        current_tags = g_info.get("hashtags", [])
+        cleaned_tags = [
+            t for t in current_tags
+            if t not in tag_to_assigned_groups or str(chat_key) in tag_to_assigned_groups[t]
+        ]
+        if len(cleaned_tags) != len(current_tags):
+            g_info["hashtags"] = cleaned_tags
+            changed = True
+
+    if changed:
+        save_json(CONFIG_FILE, cfg)
+    return changed
+
+
+def get_effective_group_tags(cfg, chat_key):
+    """
+    Returns the exact hashtags that belong ONLY to THIS specific group (`chat_key`):
+    1. Any hashtag belonging to a subject tied to ANOTHER group is strictly excluded.
+    2. Hashtags of subjects linked to THIS group are included.
+    3. Manual group hashtags (that are not claimed by another group's subject) are included.
+    """
+    chat_key_str = str(chat_key)
+    monitored = get_monitored_groups(cfg)
+    group_cfg = monitored.get(chat_key_str, {})
+
+    tree = cfg.get("_subjects", {})
+    tags_claimed_by_other_groups = set()
+    tags_claimed_by_this_group = set()
+
+    for yr_subjects in tree.values():
+        if not isinstance(yr_subjects, dict):
+            continue
+        for sub_data in yr_subjects.values():
+            if not isinstance(sub_data, dict):
+                continue
+            sub_gid = sub_data.get("group_id")
+            sub_tags = []
+            for cat in ("lectures", "boards", "records"):
+                sub_tags.extend(sub_data.get(cat, []))
+
+            if sub_gid:
+                if str(sub_gid) == chat_key_str:
+                    tags_claimed_by_this_group.update(sub_tags)
+                else:
+                    tags_claimed_by_other_groups.update(sub_tags)
+
+    # Start with manual tags on this group, minus any tag owned exclusively by another group's subject
+    effective_tags = set()
+    for t in group_cfg.get("hashtags", []):
+        if t in tags_claimed_by_this_group or t not in tags_claimed_by_other_groups:
+            effective_tags.add(t)
+
+    # Add all tags of subjects explicitly linked to this group
+    effective_tags.update(tags_claimed_by_this_group)
+    return list(effective_tags)
 
 
 def get_target_chat_id(cfg, fallback_id):
@@ -319,6 +381,9 @@ async def sync_single_message(msg, chat, chat_key, group_cfg, target_chat_id, ow
 
 
 async def scan_all_groups_history(config, target_chat_id, owner_id, state, bot_username, only_chat_key=None):
+    # Clean up any cross-group polluted tags before scanning
+    sanitize_config_isolation(config)
+
     total_added = 0
     monitored = get_monitored_groups(config)
 
@@ -387,6 +452,7 @@ async def main():
 
     # Reuse saved bot session so we never hit ImportBotAuthorizationRequest FloodWait
     cfg = load_json(CONFIG_FILE)
+    sanitize_config_isolation(cfg)
     saved_bot_session = cfg.get("_bot_session", "")
     bot_client = TelegramClient(StringSession(saved_bot_session), API_ID, API_HASH)
 
@@ -485,6 +551,7 @@ async def main():
                 cfg = load_json(CONFIG_FILE)
                 cfg[chat_key] = {"title": title, "hashtags": tags}
                 cfg["_target_chat_id"] = event.chat_id
+                sanitize_config_isolation(cfg)
                 save_json(CONFIG_FILE, cfg)
 
                 target_chat_id = get_target_chat_id(cfg, event.chat_id)
@@ -548,7 +615,7 @@ async def main():
                 ]
                 tree[year_name][sub_name][cat_key] = tags
 
-                # ONLY add these tags to the specific group linked to this subject (NOT all groups!)
+                # ONLY add these tags to the specific group linked to this subject (and remove from others!)
                 linked_group_id = tree[year_name][sub_name].get("group_id")
                 monitored = get_monitored_groups(cfg)
                 if linked_group_id and str(linked_group_id) in monitored:
@@ -558,6 +625,7 @@ async def main():
                         existing.add(t)
                     g_info["hashtags"] = list(existing)
 
+                sanitize_config_isolation(cfg)
                 save_json(CONFIG_FILE, cfg)
                 cat_label = CATEGORY_LABELS.get(cat_key, cat_key)
                 await event.reply(
@@ -825,8 +893,10 @@ async def main():
                         existing_tags.add(t)
                 cfg[chat_key]["hashtags"] = list(existing_tags)
 
+                # CRITICAL FIX: Purge this subject's tags from all OTHER groups immediately!
+                sanitize_config_isolation(cfg)
                 save_json(CONFIG_FILE, cfg)
-                await event.answer(f"✅ تم ربط مادة ({sub_name}) بمجموعة ({title}) فقط!", alert=True)
+                await event.answer(f"✅ تم ربط مادة ({sub_name}) بمجموعة ({title}) وعزل هاشتاغات المادة عن باقي المجموعات!", alert=True)
 
             await show_subject_categories(event, year_idx, sub_idx, edit_mode=True)
 
@@ -890,7 +960,7 @@ async def main():
 
             pending_user_input[sender_id] = {"mode": "group_tags", "id": chat_key, "title": title}
             cfg = load_json(CONFIG_FILE)
-            current_tags = ", ".join(cfg.get(chat_key, {}).get("hashtags", []))
+            current_tags = ", ".join(get_effective_group_tags(cfg, chat_key))
             extra_note = f"\n*(الهاشتاغات الحالية: {current_tags})*" if current_tags else ""
 
             await event.edit(
@@ -931,12 +1001,13 @@ async def main():
 
             cfg = load_json(CONFIG_FILE)
             cfg["_target_chat_id"] = event.chat_id
+            sanitize_config_isolation(cfg)
             save_json(CONFIG_FILE, cfg)
-            await event.edit("♻️ تم تصفير الذاكرة (مع الحفاظ على الرسائل المستثناة)! جاري إعادة نسخ المحاضرات حسب هاشتاغات كل مجموعة...")
+            await event.edit("♻️ تم تصفير الذاكرة وتنظيف تداخل المجموعات! جاري إعادة نسخ المحاضرات بحيث تُجلب كل مادة من مجموعتها المحددة فقط...")
             added = await scan_all_groups_history(cfg, event.chat_id, owner_id, state, bot_username)
             await bot_client.send_message(
                 event.chat_id,
-                f"✅ **اكتمل النسخ الشامل من الصفر!**\nتم جلب `{added}` رسالة ومحاضرة إلى هذه المجموعة.",
+                f"✅ **اكتمل النسخ الشامل من الصفر!**\nتم جلب `{added}` رسالة ومحاضرة إلى هذه المجموعة (كل مادة من مجموعتها المحددة حصراً).",
                 buttons=main_menu_buttons()
             )
 
@@ -1094,7 +1165,7 @@ async def main():
 
         text = (
             f"👥 **اختر المجموعة الخاصة بمادة: {sub_name}** ({year_name})\n\n"
-            f"سيقوم البوت بجلب هاشتاغات هذه المادة **حصرياً من المجموعة التي تختارها هنا** (وليس من كل المجموعات):"
+            f"سيقوم البوت بجلب هاشتاغات هذه المادة **حصرياً من المجموعة التي تختارها هنا** (وسيتم منع أي مجموعة أخرى من جلب هاشتاغات هذه المادة):"
         )
         if is_callback:
             await event.edit(text, buttons=btns)
@@ -1266,6 +1337,7 @@ async def main():
     # ---------------- EXISTING GROUP VIEWS ----------------
     async def show_groups_view(event, is_callback=True):
         cfg = load_json(CONFIG_FILE)
+        sanitize_config_isolation(cfg)
         monitored = get_monitored_groups(cfg)
         if not monitored:
             text = "⚠️ لا توجد مجموعات مراقبة حالياً.\nاضغط على **➕ إضافة / تعديل مجموعة** لاختيار مجموعاتك."
