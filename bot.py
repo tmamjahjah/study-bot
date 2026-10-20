@@ -75,7 +75,13 @@ def save_json(filepath, data):
 
 def ensure_ignored_dict(state):
     """Ensures state['ignored_messages'] is a dict for storing snippets/metadata."""
-    ignored = state.get("ignored_messages", {})
+    if not isinstance(state, dict):
+        return {}
+    if "ignored_messages" not in state:
+        state["ignored_messages"] = {}
+        save_json(STATE_FILE, state)
+
+    ignored = state["ignored_messages"]
     if isinstance(ignored, list):
         state["ignored_messages"] = {
             k: {"snippet": f"رسالة ({k})", "group_title": "مجموعة مراقبة", "link": ""}
@@ -84,6 +90,8 @@ def ensure_ignored_dict(state):
         save_json(STATE_FILE, state)
     elif not isinstance(ignored, dict):
         state["ignored_messages"] = {}
+        save_json(STATE_FILE, state)
+
     return state["ignored_messages"]
 
 
