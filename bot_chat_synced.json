@@ -512,6 +512,39 @@
       ],
       "group_title": "Pharmacy28 (2)",
       "source_link": "https://t.me/c/2257846174/7591"
+    },
+    "-1002439532388:14739": {
+      "bot_msg_id": 415,
+      "extra_bot_msg_ids": [],
+      "target_chat_id": -1004368835260,
+      "text": "#تسجيلات_كيمياء_صيدلية_٢",
+      "tags": [
+        "#تسجيلات_كيمياء_صيدلية_٢"
+      ],
+      "group_title": "Pharmacy28 (3)",
+      "source_link": "https://t.me/c/2439532388/14739"
+    },
+    "-1002439532388:14740": {
+      "bot_msg_id": 416,
+      "extra_bot_msg_ids": [],
+      "target_chat_id": -1004368835260,
+      "text": "#لوح_صيدلية_٢",
+      "tags": [
+        "#لوح_صيدلية_٢"
+      ],
+      "group_title": "Pharmacy28 (3)",
+      "source_link": "https://t.me/c/2439532388/14740"
+    },
+    "-1002257846174:7594": {
+      "bot_msg_id": 417,
+      "extra_bot_msg_ids": [],
+      "target_chat_id": -1004368835260,
+      "text": "#لوح_سموم\nالجلسة الرابعة (الميتانول)",
+      "tags": [
+        "#لوح_سموم"
+      ],
+      "group_title": "Pharmacy28 (2)",
+      "source_link": "https://t.me/c/2257846174/7594"
     }
   }
 }
