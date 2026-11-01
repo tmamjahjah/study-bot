@@ -781,6 +781,28 @@
       ],
       "group_title": "Pharmacy28 (3)",
       "source_link": "https://t.me/c/2439532388/14825"
+    },
+    "-1002439532388:14833": {
+      "bot_msg_id": 455,
+      "extra_bot_msg_ids": [],
+      "target_chat_id": -1004368835260,
+      "text": "#تسجيلات_كيمياء_صيدلية_٢",
+      "tags": [
+        "#تسجيلات_كيمياء_صيدلية_٢"
+      ],
+      "group_title": "Pharmacy28 (3)",
+      "source_link": "https://t.me/c/2439532388/14833"
+    },
+    "-1002439532388:14835": {
+      "bot_msg_id": 456,
+      "extra_bot_msg_ids": [],
+      "target_chat_id": -1004368835260,
+      "text": "#لوح_صيدلية_٢\nالجلسة الخامسة",
+      "tags": [
+        "#لوح_صيدلية_٢"
+      ],
+      "group_title": "Pharmacy28 (3)",
+      "source_link": "https://t.me/c/2439532388/14835"
     }
   }
 }
