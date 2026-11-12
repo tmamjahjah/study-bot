@@ -993,6 +993,40 @@
       ],
       "group_title": "Pharmacy28 (2)",
       "source_link": "https://t.me/c/2257846174/7855"
+    },
+    "-1002351620871:15334": {
+      "bot_msg_id": 492,
+      "extra_bot_msg_ids": [],
+      "target_chat_id": -1004368835260,
+      "text": "#تسجيل_اصطناع_دوائي",
+      "tags": [
+        "#تسجيل_اصطناع_دوائي"
+      ],
+      "group_title": "Pharmacy28 (13)",
+      "source_link": "https://t.me/c/2351620871/15334"
+    },
+    "-1002351620871:15336": {
+      "bot_msg_id": 493,
+      "extra_bot_msg_ids": [],
+      "target_chat_id": -1004368835260,
+      "text": "#تسجيل_صيدلة_صناعية_1",
+      "tags": [
+        "#تسجيل_صيدلة_صناعية_1"
+      ],
+      "group_title": "Pharmacy28 (13)",
+      "source_link": "https://t.me/c/2351620871/15336"
+    },
+    "-1002351620871:15340": {
+      "bot_msg_id": 494,
+      "extra_bot_msg_ids": [],
+      "target_chat_id": -1004368835260,
+      "text": "#لوح__صيدلة_صناعية_1 \n#لوح_الكيمياء_الصيدلية_2 \n#لوح_اصطناع_دوائي \n#لوح_سموم",
+      "tags": [
+        "#لوح__صيدلة_صناعية_1",
+        "#لوح_اصطناع_دوائي"
+      ],
+      "group_title": "Pharmacy28 (13)",
+      "source_link": "https://t.me/c/2351620871/15340"
     }
   }
 }
